@@ -1,0 +1,93 @@
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+
+public class EchoServer1 {
+	private int port=8887;	//服务器与本地电脑的连接端口
+	private ServerSocketChannel serverSocketChannel;	//建立服务器通道
+	private ExecutorService executorService;		//连接池
+	private int Pool_size=4;					//单个CPU时的工作线程数量
+	public EchoServer1() throws IOException {
+		//创建一个线程池
+		executorService=Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()*Pool_size);
+		serverSocketChannel=ServerSocketChannel.open();
+		//使得同一个主机上关闭服务器程序，紧接着启动服务器程序时再启动该服务器的程序时，可以顺利的绑定该端口
+		serverSocketChannel.socket().setReuseAddress(true);
+		//给服务器绑定端口号
+		serverSocketChannel.socket().bind(new InetSocketAddress(port));
+		System.out.println("服务器启动");
+	}
+	public  void service(){
+		SocketChannel socketChannel=null;
+		try {
+			socketChannel=serverSocketChannel.accept();
+			executorService.execute(new Handler(socketChannel));
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	public static void main(String[] args) throws IOException{
+		new EchoServer1().service();
+	}
+	
+	
+}
+class Handler implements Runnable{
+	SocketChannel socketChannel;
+	public Handler(SocketChannel socketChannel){
+		this.socketChannel=socketChannel;
+	}
+
+	@Override
+	public void run() {
+		handler(socketChannel);
+	}
+
+	private void handler(SocketChannel socketChannel) {
+		Socket socket=null;
+		try {
+			socket=socketChannel.socket();
+			System.out.println("来做客户端的请求:"+socket.getLocalAddress()+" "+socket.getLocalPort());
+			String msg=null;
+			PrintWriter pw=getWriter(socket);
+			BufferedReader br=getReader(socket);
+			while((msg=br.readLine())!=null){
+				System.out.println("来自客户端的信息:"+msg);
+				pw.println("from server:"+msg);
+				if(msg.equals("bye")){
+					break;
+				}
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}finally{
+			if(socket!=null){
+				try {
+					socket.close();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+	public PrintWriter getWriter(Socket socket) throws IOException{
+		OutputStream os=socket.getOutputStream();
+		return new PrintWriter(os);
+	}
+	public BufferedReader getReader(Socket socket) throws IOException{
+		InputStream is=socket.getInputStream();
+		return new BufferedReader(new InputStreamReader(is));
+	}
+}
