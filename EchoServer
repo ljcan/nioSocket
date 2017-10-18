@@ -1,0 +1,130 @@
+/**
+ * 非阻塞式线程池
+ */
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.Charset;
+import java.util.Iterator;
+import java.util.Set;
+
+import com.sun.corba.se.spi.activation.Server;
+import com.sun.xml.internal.bind.v2.runtime.output.Encoded;
+import com.sun.xml.internal.fastinfoset.Decoder;
+
+public class EchoServer {
+	private ServerSocketChannel serverSocketChannel=null;
+	private Selector selector=null;
+	private int port=8010;
+	private Charset charset=Charset.forName("GBK");
+	public EchoServer() throws IOException {
+		selector=Selector.open();
+		serverSocketChannel=ServerSocketChannel.open();
+		//使得本地服务器关闭后，再次启动服务器能够绑定到相同的端口号
+		serverSocketChannel.socket().setReuseAddress(true);
+		serverSocketChannel.configureBlocking(false);	//采用非阻塞模式
+		serverSocketChannel.socket().bind(new InetSocketAddress(port));	//把服务器进程与本地端口号绑定
+		System.out.println("服务器启动");
+	}
+	public void service() throws IOException{
+		serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+		SelectionKey selectKey=null;
+		while(selector.select()>0){
+			try {
+				Set<SelectionKey> setKey=selector.selectedKeys();
+				Iterator<SelectionKey> iter=setKey.iterator();
+				while(iter.hasNext()){
+					selectKey=iter.next();
+					iter.remove();
+					if(selectKey.isAcceptable()){
+						//获得与selectKey关联的ServerSocketChannel
+						ServerSocketChannel ssc=(ServerSocketChannel) selectKey.channel();
+						//获得与客户端连接的SocketChannel
+						SocketChannel socketChannel=ssc.accept();
+						System.out.println("接收到来自客户端的请求:"+socketChannel.socket().getInetAddress()+" "
+								+socketChannel.socket().getPort());
+						socketChannel.configureBlocking(false);			//非阻塞模式
+						//创建一个用来存放用户发送来的数据的缓冲区
+						ByteBuffer buffer=ByteBuffer.allocate(1024);
+						//selector向SocketChannel注册读就绪事件和写就绪事件 
+						socketChannel.register(selector, SelectionKey.OP_READ|
+								SelectionKey.OP_WRITE,buffer);			//关联了一个buffer附件
+					}
+					if(selectKey.isReadable()){
+						receive(selectKey);
+					}
+					if(selectKey.isWritable()){
+						send(selectKey);
+					}
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
+				if(selectKey!=null){
+					selectKey.cancel();		//使得这个selectKey失效，使得selector不再监视这个selectKey感兴趣的事件
+					selectKey.channel().close();		//关闭与这个selectKey关联的channel
+				}
+			}
+			
+		}
+		
+	}
+	private void send(SelectionKey selectKey) {
+		//获得与selectKey关联的附件
+		ByteBuffer buffer=(ByteBuffer) selectKey.attachment();
+		//获得与selectKey关联的socketChannel
+		SocketChannel socketChannel=(SocketChannel) selectKey.channel();
+		buffer.flip();
+		String data=decoder(buffer);    
+		if(data.indexOf("\r\n")==-1){
+			return;
+		}
+		String outputData=data.substring(port, data.indexOf("\n")+1);
+		System.out.println(outputData);
+		//因为writer不能发送字符串，只能发送ByteBuffer中的字节，所以需要对数据进行编码
+		ByteBuffer outbuffer=encode("echo:"+outputData);
+		while(outbuffer.hasRemaining()){			//发送一行字符串
+			try {
+				socketChannel.write(outbuffer);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+		ByteBuffer temp=encode(outputData);
+		buffer.position(temp.limit());
+		buffer.compact();			//删除已处理的字符串
+	}
+	//编码
+	private ByteBuffer encode(String string) {
+		return charset.encode(string);
+	}
+	//解码
+	private String decoder(ByteBuffer buffer) {
+		CharBuffer charBuffer=charset.decode(buffer);
+		return charBuffer.toString();
+	}
+	private void receive(SelectionKey selectKey) throws IOException {
+		ByteBuffer buffer=(ByteBuffer) selectKey.attachment();
+		SocketChannel socketChannel=(SocketChannel) selectKey.channel();
+		ByteBuffer readBuffer=ByteBuffer.allocate(32);
+		socketChannel.read(readBuffer);
+		readBuffer.flip();
+		//把buffer的极限设为容量(因为无法保证socketChannel.read(readBuffer)每次都能读一行数据，
+		//因为把数据都放如buffer中，当buffer中凑足一行数据后，再把数据发送给客户)
+		buffer.limit(buffer.capacity());
+		//把readbuffer中的内容拷贝到buffer，假定buffer的容量足够大，不会出现缓冲区溢出的异常
+		buffer.put(readBuffer);
+	}
+	public static void main(String[] args){
+		try {
+			new EchoServer().service();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+}
