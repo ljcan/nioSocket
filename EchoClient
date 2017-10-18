@@ -1,0 +1,162 @@
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.Charset;
+import java.util.Iterator;
+import java.util.Set;
+
+/**
+ * 连接服务器
+ * @author Shinelon
+ *
+ */
+public class EchoClient {
+	public SocketChannel socketChannel=null;
+	//设置两个字节缓冲区来存放发送和接受的数据
+	public ByteBuffer sendBuffer=ByteBuffer.allocate(1024);
+	public ByteBuffer receiveBuffer=ByteBuffer.allocate(1024);
+	public Charset charset=Charset.forName("GBK");
+	public Selector selector;
+	public EchoClient() throws IOException {
+		socketChannel=SocketChannel.open();
+		InetAddress ia=InetAddress.getLocalHost();
+		InetSocketAddress isa=new InetSocketAddress(ia,8010);
+		socketChannel.connect(isa);				//采用阻塞模式连接服务器
+		socketChannel.configureBlocking(false);			//设置为非阻塞模式
+		System.out.println("与服务器连接成功");
+		selector=Selector.open();
+	}
+	/**
+	 * 从控制台接受来自客户端的数据
+	 */
+	public void ReceiveFromUser(){
+		try {
+			BufferedReader reader=new BufferedReader(new InputStreamReader(System.in));
+			String msg=null;
+			while((msg=reader.readLine())!=null){
+				//因为在这个接受来自客户端的信息的线程会与发送数据的线程对sendBuffer缓冲区产生竞争，
+				//因此防止程序产生自锁
+				synchronized (sendBuffer) {
+					sendBuffer.put(encode(msg+"\r\n"));
+				}
+				if(msg.equals("bye")){
+					break;
+				}
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	/**
+	 * 向服务器发送数据
+	 * @param key
+	 */
+	public void send(SelectionKey key){
+		//发送在sendBuffer中 的数据
+		SocketChannel socketChannel=(SocketChannel) key.channel();
+		try {
+			synchronized (sendBuffer) {
+				sendBuffer.flip();			//把极限设置为位置，把位置设置为0
+				socketChannel.write(sendBuffer);		//发送数据
+				sendBuffer.compact();			//删除已经发送的数据
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	/**
+	 * 接受来EchoServer的数据，把数据存放在receiveBuffer中
+	 * 如果receiveBuffer中满一行数据，就打印这一行数据，并且删除打印过的数据
+	 * @param key
+	 */
+	public void receiver(SelectionKey key){
+		try {
+			SocketChannel socketChannel=(SocketChannel) key.channel();
+			socketChannel.read(receiveBuffer);
+			receiveBuffer.flip();
+			String receiveData=decode(receiveBuffer);
+			//如果缓存区中的数据不满一行，则返回
+			if(receiveData.indexOf("\n")==-1) return;
+			String data=receiveData.substring(0, receiveData.indexOf("\n")+1);
+			System.out.println(data);
+			if(data.equals("echo:bye\r\n")){
+				key.cancel();
+				socketChannel.close();
+				System.out.println("关闭与服务器的连接");
+				selector.close();
+				System.exit(0);     //退出程序
+			}
+			ByteBuffer temp=encode(data);
+			receiveBuffer.position(temp.limit());
+			receiveBuffer.compact();			//删除已经打印的数据
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+	}
+	/**
+	 * 与服务器进行交流，接受和发送数据
+	 * @throws IOException 
+	 */
+	public void talk() throws IOException{
+		try {
+			socketChannel.register(selector, SelectionKey.OP_READ|SelectionKey.OP_WRITE);
+			while(selector.select()>0){
+				Set<SelectionKey> keys=selector.selectedKeys();
+				Iterator<SelectionKey> itre=keys.iterator();
+				while(itre.hasNext()){
+					SelectionKey selectKey=null;
+					try {
+						selectKey=itre.next();
+						itre.remove();
+						if(selectKey.isReadable()){
+							receiver(selectKey);
+						}
+						if(selectKey.isWritable()){
+							send(selectKey);
+						}
+					} catch (Exception e) {
+						e.printStackTrace();
+					}finally{
+						if(selectKey!=null){
+							selectKey.cancel();
+							selectKey.channel().close();
+						}
+					}
+				}
+			}
+		} catch (ClosedChannelException e) {
+			e.printStackTrace();
+		}
+	}
+	
+	private ByteBuffer encode(String string) {
+		return charset.encode(string);
+	}
+	public String decode(ByteBuffer buffer){
+		CharBuffer charBuffer=charset.decode(buffer);
+		return charBuffer.toString();
+	}
+	/**
+	 * 启动主线程
+	 * @throws IOException 
+	 */
+	public static void main(String[] args) throws IOException{
+		final EchoClient client=new EchoClient();
+		Thread thread=new Thread(){				//创建receive线程
+			@Override
+			public void run() {
+				client.ReceiveFromUser();			//接受向控制台输入的数据
+			}
+		};
+		thread.start();
+		client.talk();
+	}
+}
